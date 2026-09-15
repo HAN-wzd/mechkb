@@ -1,6 +1,7 @@
 """向量库：Embedding + ChromaDB 入库与检索"""
 import os
 
+import chromadb
 from dotenv import load_dotenv
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
@@ -21,19 +22,30 @@ embeddings = OpenAIEmbeddings(
 )
 
 PERSIST_DIR = "chroma_db"  # 向量库落盘位置，已在 .gitignore 里
+COLLECTION = "mechkb"      # 集合名：固定下来，重建时删集合而不是删文件夹
+
+
+def _client() -> chromadb.PersistentClient:
+    return chromadb.PersistentClient(path=PERSIST_DIR)
 
 
 def build_vectorstore(chunk_size: int = 500, chunk_overlap: int = 50) -> Chroma:
-    """全量构建向量库：加载 → 切分 → 向量化 → 入库（重复调用会先清库重建）"""
-    if os.path.exists(PERSIST_DIR):
-        import shutil
-        shutil.rmtree(PERSIST_DIR)  # 重建前清掉旧库，保证库和语料一致
+    """全量构建向量库：加载 → 切分 → 向量化 → 入库（重复调用会先清空集合重建）"""
+    client = _client()
+    try:
+        # 重建用"删集合"而不是 shutil.rmtree 删文件夹：
+        # Windows 下文件夹里的 SQLite 文件被 Chroma 占用时会报 PermissionError
+        client.delete_collection(COLLECTION)
+    except Exception:
+        pass  # 集合不存在（首次构建/手动删过文件夹），跳过
     docs = load_documents()
     chunks = split_documents(docs, chunk_size, chunk_overlap)
     # from_documents 内部会逐个 chunk 调 Embedding API
     vectorstore = Chroma.from_documents(
         chunks,
         embedding=embeddings,
+        client=client,
+        collection_name=COLLECTION,
         persist_directory=PERSIST_DIR,  # 落盘，下次启动不用重新入库
     )
     print(f"[vectorstore] 入库完成，共 {len(chunks)} 个 chunk，保存于 ./{PERSIST_DIR}")
@@ -45,7 +57,8 @@ def get_vectorstore() -> Chroma:
     if not os.path.exists(PERSIST_DIR):
         raise FileNotFoundError("向量库不存在，先运行 build_vectorstore()")
     return Chroma(
-        persist_directory=PERSIST_DIR,
+        client=_client(),
+        collection_name=COLLECTION,
         embedding_function=embeddings,
     )
 

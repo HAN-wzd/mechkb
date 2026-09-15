@@ -1,10 +1,14 @@
 """RAG 问答链：检索 → 拼 Prompt → LLM 生成带引用的回答"""
+import json
+import os
 from dataclasses import dataclass, field
 
 from langchain_core.documents import Document
 
-from core.llm import chat
+from core.llm import chat, chat_stream
 from core.vectorstore import search
+
+HISTORY_FILE = "chat_history.json"  # 会话历史持久化文件（已在 .gitignore）
 
 SYSTEM_PROMPT = """你是一名严谨的机械工程知识助手，服务对象是工厂的工程师。
 
@@ -30,8 +34,24 @@ def _build_context(docs: list[Document]) -> str:
 
 @dataclass
 class ChatSession:
-    """一次多轮会话：维护对话历史，供追问使用"""
+    """一次多轮会话：维护对话历史，供追问使用；历史持久化到本地 JSON"""
     history: list = field(default_factory=list)  # [{"role": ..., "content": ...}, ...]
+
+    def __post_init__(self):
+        # 启动时恢复历史：浏览器 F5 刷新后 Streamlit 会重建 Session，靠文件找回
+        if os.path.exists(HISTORY_FILE):
+            with open(HISTORY_FILE, encoding="utf-8") as f:
+                self.history = json.load(f)
+
+    def _save(self):
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(self.history, f, ensure_ascii=False, indent=2)
+
+    def clear(self):
+        """清空对话（含持久化文件）"""
+        self.history = []
+        if os.path.exists(HISTORY_FILE):
+            os.remove(HISTORY_FILE)
 
     def ask(self, question: str, k: int = 3) -> str:
         """问一个问题，返回带引用的回答；对话历史自动累积"""
@@ -50,11 +70,38 @@ class ChatSession:
         # ③ 调 LLM 生成回答（Day 2 的重试/超时封装在这里生效）
         answer = chat(messages)
 
-        # ④ 把本轮问答追加进历史（追问时模型有上下文）
+        # ④ 把本轮问答追加进历史（追问时模型有上下文）并落盘
         self.history.append({"role": "user", "content": question})
         self.history.append({"role": "assistant", "content": answer})
+        self._save()
         return answer, docs
 
+    
+    def ask_stream(self, question: str, k: int = 3):
+        """
+        流式版 ask：逐段 yield 回答内容；结束后本轮问答自动入历史。
+        检索到的文档存在 self.last_docs，供前端展示引用来源。
+        """
+        docs = search(question, k=k)
+        self.last_docs = docs
+        context = _build_context(docs)
+
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages.extend(self.history)
+        messages.append({
+            "role": "user",
+            "content": f"参考资料：\n{context}\n\n问题：{question}",
+        })
+
+        pieces = []
+        for piece in chat_stream(messages):   # Day 2 的流式封装在这里复用
+            pieces.append(piece)
+            yield piece
+
+        answer = "".join(pieces)
+        self.history.append({"role": "user", "content": question})
+        self.history.append({"role": "assistant", "content": answer})
+        self._save()
 
 if __name__ == "__main__":
     # 多轮对话自测
