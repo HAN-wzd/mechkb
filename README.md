@@ -6,7 +6,7 @@
 [![LangChain](https://img.shields.io/badge/LangChain-RAG-green)]()
 [![License](https://img.shields.io/badge/License-MIT-lightgrey)]()
 
-**在线 Demo**：https://huggingface.co/spaces/你的用户名/mechkb （部署后替换）
+**在线 Demo**：https://mechkb-wzd.streamlit.app （Streamlit Community Cloud 部署，闲置后首次访问需等待约 30 秒唤醒）
 
 ## 为什么做这个
 
